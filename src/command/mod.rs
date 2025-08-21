@@ -6,6 +6,7 @@ use embedded_usb_pd::PdError;
 
 pub mod muxr;
 pub mod trig;
+pub mod vdms;
 
 /// Length of a command
 const CMD_LEN: usize = 4;
@@ -81,6 +82,15 @@ pub enum Command {
     /// # Output
     /// [`ReturnValue`]
     Muxr = u32_from_str("MuxR"),
+
+    /// Send Vendor Defined Message (VDM).
+    ///
+    /// # Input
+    /// [`vdms::Input`]
+    ///
+    /// # Output
+    /// [`ReturnValue`]
+    Vdms = u32_from_str("VDMs"),
 }
 
 impl TryFrom<u32> for Command {
@@ -117,6 +127,8 @@ impl TryFrom<u32> for Command {
             Ok(Command::Dbfg)
         } else if Command::Muxr == value {
             Ok(Command::Muxr)
+        } else if Command::Vdms == value {
+            Ok(Command::Vdms)
         } else {
             Err(PdError::InvalidParams)
         }
@@ -145,6 +157,7 @@ impl Command {
             Command::Gaid | Command::Tfuc => RESET_DELAY_MS + 100,
             Command::Srdy | Command::Sryr => 250, // determined by experimentation
             Command::Trig => 500,                 // determined by experimentation
+            Command::Vdms => 1000,                // timeout for VDMs task
             _ => 1000,
         }
     }

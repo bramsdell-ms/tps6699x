@@ -18,7 +18,7 @@ use itertools::izip;
 
 use super::interrupt::{self, InterruptController};
 use crate::asynchronous::internal;
-use crate::command::{muxr, trig, Command, ReturnValue, SrdySwitch};
+use crate::command::{muxr, trig, vdms, Command, ReturnValue, SrdySwitch};
 use crate::registers::autonegotiate_sink::AutoComputeSinkMaxVoltage;
 use crate::registers::field_sets::IntEventBus1;
 use crate::{error, registers, trace, warn, DeviceError, Mode, MAX_SUPPORTED_PORTS};
@@ -465,6 +465,75 @@ impl<'a, M: RawMutex, B: I2c> Tps6699x<'a, M, B> {
     pub async fn execute_muxr(&mut self, port: PortId, input: muxr::Input) -> Result<ReturnValue, Error<B::Error>> {
         let indata = input.0.to_le_bytes();
         self.execute_command(port, Command::Muxr, Some(&indata), None).await
+    }
+
+    /// Execute the [`Command::Vdms`] command to send a Vendor Defined Message (VDM).
+    ///
+    /// The VDMs Task instructs PD Controller to send a Vendor Defined Message (VDM)
+    /// at the first opportunity while maintaining policy engine compliance.
+    ///
+    /// # Arguments
+    ///
+    /// * `port` - The port to send the VDM on
+    /// * `input` - The VDMs input data specifying VDM content and configuration
+    ///
+    /// # Returns
+    ///
+    /// Returns the task result:
+    /// * `Success` - The VDM was sent and a GoodCRC was received
+    /// * `Rejected` - The task was rejected (e.g., NumDOs is 0, policy doesn't allow VDM)
+    /// * `Abort` - The task timed out (VDM was sent but no GoodCRC received)
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use tps6699x::asynchronous::embassy::Tps6699x;
+    /// # use tps6699x::command::vdms::{Input, SopTarget};
+    /// # use tps6699x::{PORT0, ADDR0};
+    /// # async fn example<I2C: embedded_hal_async::i2c::I2c>(mut i2c: I2C) -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut tps = Tps6699x::new([&mut i2c], ADDR0).await?;
+    ///
+    /// // Send a Structured VDM (e.g., Discover Identity)
+    /// let discover_identity_header = 0xFF008001; // Example SVDM header  
+    /// let vdm_input = Input::structured_vdm(
+    ///     discover_identity_header,
+    ///     &[], // No additional VDOs
+    ///     SopTarget::Sop,
+    ///     true // Initiating
+    /// );
+    ///
+    /// match tps.execute_vdms(PORT0, vdm_input).await? {
+    ///     tps6699x::command::ReturnValue::Success => {
+    ///         println!("VDM sent successfully");
+    ///         // Check RX_OTHER_VDM register for response
+    ///         let rx_vdm = tps.get_rx_other_vdm(PORT0).await?;
+    ///         // Process response...
+    ///     }
+    ///     result => println!("VDM failed: {:?}", result),
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Side Effects
+    ///
+    /// If the VDMs Task succeeds, all incoming VDMs that are not Initiator Attention messages
+    /// will be stored in the RX_OTHER_VDM register (0x61) regardless of PD Controller's current
+    /// state, so responses can be processed by the Host.
+    ///
+    /// # Important Notes
+    ///
+    /// - The host must not send back-to-back 'VDMs' commands too quickly
+    /// - If SOPTarget was not SOP, wait at least 35 ms between consecutive VDMs commands
+    /// - It's recommended to wait 35 ms between consecutive VDMs for SOPTarget=SOP as well
+    pub async fn execute_vdms(&mut self, port: PortId, input: vdms::Input) -> Result<ReturnValue, Error<B::Error>> {
+        use bincode::config;
+
+        let mut indata = [0u8; vdms::VDMS_INPUT_LEN];
+        bincode::encode_into_slice(input, &mut indata, config::standard().with_fixed_int_encoding())
+            .map_err(|_| Error::from(PdError::InvalidParams))?;
+
+        self.execute_command(port, Command::Vdms, Some(&indata), None).await
     }
 
     /// Reset the device.
